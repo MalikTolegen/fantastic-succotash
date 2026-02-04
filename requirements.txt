@@ -1,0 +1,11 @@
+# Core dependencies for both data-saver and data-viewer
+numpy==1.26.4
+scipy==1.11.4
+
+# GUI framework
+PyQt5==5.15.11
+# Alternative: PySide6==6.6.1 (use if PyQt5 fails to install on your platform)
+
+# Data Saver specific
+pyserial          # Serial communication with GPS and distance sensors
+pyqtgraph         # Real-time plotting and visualization
