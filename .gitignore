@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+.env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# PyInstaller
+*.spec
+build/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data captures
+*.dat
+
+# Environment variables
+.env
+*.env.local
