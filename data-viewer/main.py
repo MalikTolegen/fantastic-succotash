@@ -171,6 +171,10 @@ class DistanceCalculator:
         Returns:
             ToF sample index, or "Not Detected" if not found
         """
+
+        """Uncomment the thing in below to use for sensor from 0109 Data"""
+
+        """
         if len(envelope) <= self.crosstalk_skip + self.min_detection_distance:
             return "Not Detected"
 
@@ -182,7 +186,9 @@ class DistanceCalculator:
         else:
             if len(envelope) < 2000:
                 return "Not Detected"
-            noise_region = envelope[1500:2000]
+            noise_region = envelope[1500:2000]"""
+        
+        noise_region = envelope[2500:3500] # THIS IS ONLY FOR SEJINNIM'S SENSOR DATA
 
         noise_std = np.std(noise_region)
         noise_median = np.median(noise_region)
