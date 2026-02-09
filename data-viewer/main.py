@@ -305,6 +305,40 @@ class DistanceCalculator:
                         if self.debug_tof:
                             print("[ToF] Method=AdaptiveThreshold2.0", flush=True)
                         return int(tof_idx_rx)
+
+        # Method BasicCriteria: sustained rise + amplitude + slope gate
+        rise_len = 100
+        rise_delta_min = 10
+        rise_end_min = 50
+        slope_threshold = np.tan(np.deg2rad(22.5))
+
+        if len(search_signal) > rise_len + 1:
+            for start_idx in range(0, len(search_signal) - rise_len - 1):
+                end_idx = start_idx + rise_len
+                rising = True
+                for j in range(start_idx, end_idx):
+                    if search_signal[j + 1] <= search_signal[j]:
+                        rising = False
+                        break
+                if not rising:
+                    continue
+
+                if (search_signal[end_idx] - search_signal[start_idx]) < rise_delta_min:
+                    continue
+                if search_signal[end_idx] < rise_end_min:
+                    continue
+
+                onset_idx = None
+                for j in range(start_idx, end_idx):
+                    if (search_signal[j + 1] - search_signal[j]) > slope_threshold:
+                        onset_idx = j
+                        break
+
+                if onset_idx is not None:
+                    tof_idx_basic = onset_idx + self.crosstalk_skip
+                    if self.debug_tof:
+                        print("[ToF] Method=BasicCriteria", flush=True)
+                    return int(tof_idx_basic)
         
         # Method 2: Energy-Based Detection (Fallback)
         window_size = 100  # 100 μs window

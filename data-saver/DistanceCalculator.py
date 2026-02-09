@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import math
 import numpy as np
 from scipy import signal
 from datetime import datetime
@@ -56,6 +57,8 @@ class DistanceCalculator:
         self.noise_estimation_length = 1000  # Use 1000 samples (2500-3500) for noise estimation
         self.snr_threshold = 12  # Signal-to-noise ratio threshold (dB)
         self.min_absolute_amplitude = 50  # Minimum absolute signal amplitude
+        # Tilt correction (degrees) for final distance adjustment
+        self.tilt_angle_deg = 8.05
         
         # Cache for last valid distance (to handle empty file edge-case)
         self.last_valid_distance = None  # Store last successful distance prediction
@@ -394,9 +397,12 @@ class DistanceCalculator:
         # where c is in m/s and Δt is in μs
         distance_mm = self.BETA_0 + self.BETA_1 * c * delta_t / 1000
         
+        # Apply tilt correction to final distance
+        distance_mm = distance_mm * math.cos(math.radians(self.tilt_angle_deg))
+
         # Cache this valid distance for future use
         self.last_valid_distance = distance_mm
-        
+
         return distance_mm
 
 
