@@ -11,6 +11,23 @@ BPF_LOW = 20e3
 BPF_HIGH = 60e3
 
 
+def butter_bandpass(lowcut, highcut, fs, order=4):
+	nyq = 0.5 * fs
+	low = lowcut / nyq
+	high = highcut / nyq
+	if high >= 1.0:
+		high = 0.99
+	if low <= 0.0:
+		low = 0.001
+	sos = signal.butter(order, [low, high], analog=False, btype="band", output="sos")
+	return sos
+
+
+def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
+	sos = butter_bandpass(lowcut, highcut, fs, order=order)
+	return signal.sosfilt(sos, data)
+
+
 def load_adc_data(file_path):
 	if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
 		return None
@@ -336,9 +353,6 @@ def plot_folder(folder_path, output_dir, calculator):
 	rx_start_sample = "Not Detected"
 	tx_start_sample = "Not Detected"
 
-	if tx_signal is not None and len(tx_signal) > 0:
-		tx_start_sample = calculator.detect_tx_start(tx_signal)
-
 	rx_vol = None
 	tx_vol = None
 
@@ -348,13 +362,9 @@ def plot_folder(folder_path, output_dir, calculator):
 
 	if rx_signal is not None and len(rx_signal) > 0:
 		rx_vol = rx_signal - np.mean(rx_signal)
-		if BPF_APPLY:
-			try:
-				rx_vol = calculator.bandpass_filter(rx_vol, BPF_LOW, BPF_HIGH)
-			except Exception:
-				pass
-
-		filtered = calculator.bandpass_filter(rx_signal - np.mean(rx_signal), BPF_LOW, BPF_HIGH)
+		filtered = calculator.bandpass_filter(
+			rx_signal - np.mean(rx_signal), BPF_LOW, BPF_HIGH
+		)
 		envelope = calculator.envelope_detection(filtered)
 		tof_sample = calculator.detect_tof(envelope, tx_signal)
 		rx_start_sample = tof_sample
