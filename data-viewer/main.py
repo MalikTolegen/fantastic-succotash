@@ -78,6 +78,8 @@ class DistanceCalculator:
         self.min_absolute_amplitude = 50  # Minimum absolute signal amplitude
         # Cache last valid distance to handle empty/invalid frames gracefully
         self.last_valid_distance = None
+        # Debug toggle: log which ToF detection method succeeds
+        self.debug_tof = True
     
     def load_adc_data(self, file_path):
         """Load raw ADC data from file. Returns None for empty/invalid files."""
@@ -250,6 +252,8 @@ class DistanceCalculator:
                 # Final validation: check absolute amplitude
                 tof_idx = start_idx + self.crosstalk_skip
                 if envelope[tof_idx] > self.min_absolute_amplitude:
+                    if self.debug_tof:
+                        print("[ToF] Method=AdaptiveThreshold", flush=True)
                     return int(tof_idx)
         
         # Method 2: Energy-Based Detection (Fallback)
@@ -273,6 +277,8 @@ class DistanceCalculator:
         if energy_ratio_db > self.snr_threshold and max_energy_idx is not None:
             if max_energy_idx - self.crosstalk_skip >= self.min_detection_distance:
                 if envelope[max_energy_idx] > self.min_absolute_amplitude:
+                    if self.debug_tof:
+                        print("[ToF] Method=EnergyFallback", flush=True)
                     return int(max_energy_idx)
         
         # Method 3: First Significant Rise Detection (Last Resort)
@@ -286,6 +292,8 @@ class DistanceCalculator:
             if len(valid_rises) > 0:
                 tof_idx = valid_rises[0] + self.crosstalk_skip
                 if envelope[tof_idx] > adaptive_threshold * 0.7 and envelope[tof_idx] > self.min_absolute_amplitude:
+                    if self.debug_tof:
+                        print("[ToF] Method=RiseFallback", flush=True)
                     return int(tof_idx)
         
         return "Not Detected"
