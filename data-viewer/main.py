@@ -186,6 +186,7 @@ class DistanceCalculator:
         else:
             if len(envelope) < 2000:
                 return "Not Detected"
+            tx_env = None
             noise_region = envelope[1500:2000]
         
         # noise_region = envelope[2500:3500] # THIS IS ONLY FOR SEJINNIM'S SENSOR DATA
@@ -255,10 +256,68 @@ class DistanceCalculator:
                     if self.debug_tof:
                         print("[ToF] Method=AdaptiveThreshold", flush=True)
                     return int(tof_idx)
+
+        # Method 1.5: Adaptive Threshold using RX noise region (2500-3000)
+        if len(envelope) < 3000:
+            return "Not Detected"
+
+        noise_region_rx = envelope[2500:3000]
+        noise_std_rx = np.std(noise_region_rx)
+        noise_median_rx = np.median(noise_region_rx)
+        noise_max_rx = np.max(noise_region_rx)
+
+        threshold_median_rx = noise_median_rx + 5 * noise_std_rx
+        threshold_percentile_rx = np.percentile(noise_region_rx, 90) + 4 * noise_std_rx
+        threshold_max_rx = noise_max_rx + 3 * noise_std_rx
+
+        adaptive_threshold_rx = np.median(
+            [threshold_median_rx, threshold_percentile_rx, threshold_max_rx]
+        )
+        adaptive_threshold_rx = max(adaptive_threshold_rx, MIN_THRESHOLD)
+
+        threshold_crossings_rx = np.where(search_signal > adaptive_threshold_rx)[0]
+
+        if len(threshold_crossings_rx) > 0:
+            first_crossing_rx = threshold_crossings_rx[0]
+
+            if first_crossing_rx < self.min_detection_distance:
+                valid_crossings_rx = threshold_crossings_rx[
+                    threshold_crossings_rx >= self.min_detection_distance
+                ]
+                if len(valid_crossings_rx) == 0:
+                    first_crossing_rx = None
+                else:
+                    first_crossing_rx = valid_crossings_rx[0]
+
+            if first_crossing_rx is not None:
+                sustained = True
+                for i in range(
+                    first_crossing_rx,
+                    min(first_crossing_rx + 5, len(search_signal))
+                ):
+                    if search_signal[i] <= adaptive_threshold_rx * 0.8:
+                        sustained = False
+                        break
+
+                if sustained:
+                    tof_idx_rx = first_crossing_rx + self.crosstalk_skip
+                    if envelope[tof_idx_rx] > self.min_absolute_amplitude:
+                        if self.debug_tof:
+                            print("[ToF] Method=AdaptiveThreshold2.0", flush=True)
+                        return int(tof_idx_rx)
         
         # Method 2: Energy-Based Detection (Fallback)
         window_size = 100  # 100 μs window
         hop_size = 20  # 20 μs hop
+        energy_snr_threshold = 6
+        energy_onset_k = 1.8
+        energy_sustain_len = 5
+        energy_lookback_factor = 4
+
+        # Use TX-only noise region for this fallback
+        energy_noise_region = None
+        if tx_env is not None and len(tx_env) >= 3000:
+            energy_noise_region = tx_env[2500:3000]
         
         max_energy = 0
         max_energy_idx = None
@@ -271,12 +330,44 @@ class DistanceCalculator:
                 max_energy = energy
                 max_energy_idx = i
         
-        noise_energy = np.sum(noise_region ** 2) / len(noise_region) * window_size
+        if energy_noise_region is None or len(energy_noise_region) == 0:
+            return "Not Detected"
+
+        noise_energy = np.sum(energy_noise_region ** 2) / len(energy_noise_region) * window_size
         energy_ratio_db = 10 * np.log10(max_energy / (noise_energy + 1e-10))
         
-        if energy_ratio_db > self.snr_threshold and max_energy_idx is not None:
+        if energy_ratio_db > energy_snr_threshold and max_energy_idx is not None:
             if max_energy_idx - self.crosstalk_skip >= self.min_detection_distance:
                 if envelope[max_energy_idx] > self.min_absolute_amplitude:
+                    # Refine to onset: find first sustained rise above a local threshold
+                    energy_search_start = max(
+                        self.crosstalk_skip,
+                        max_energy_idx - (window_size * energy_lookback_factor)
+                    )
+                    energy_segment = envelope[energy_search_start:max_energy_idx + 1]
+                    if len(energy_segment) > 0:
+                        seg_median = np.median(energy_segment)
+                        seg_std = np.std(energy_segment)
+                        local_threshold = seg_median + energy_onset_k * seg_std
+
+                        onset_idx = None
+                        for i in range(len(energy_segment)):
+                            if energy_segment[i] <= local_threshold:
+                                continue
+                            sustained = True
+                            end_i = min(i + energy_sustain_len, len(energy_segment))
+                            for j in range(i, end_i):
+                                if energy_segment[j] <= local_threshold * 0.8:
+                                    sustained = False
+                                    break
+                            if sustained:
+                                onset_idx = energy_search_start + i
+                                break
+
+                        if onset_idx is not None and envelope[onset_idx] > self.min_absolute_amplitude:
+                            if self.debug_tof:
+                                print("[ToF] Method=EnergyFallback", flush=True)
+                            return int(onset_idx)
                     if self.debug_tof:
                         print("[ToF] Method=EnergyFallback", flush=True)
                     return int(max_energy_idx)
