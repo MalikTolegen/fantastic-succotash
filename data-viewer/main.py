@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import glob
+import math
 import numpy as np
 import time
 from scipy import signal
@@ -76,6 +77,8 @@ class DistanceCalculator:
         self.noise_estimation_length = 1000  # Use 1000 samples (2500-3500) for noise estimation
         self.snr_threshold = 12  # Signal-to-noise ratio threshold (dB)
         self.min_absolute_amplitude = 50  # Minimum absolute signal amplitude
+        # Tilt correction (degrees) for final distance adjustment
+        self.tilt_angle_deg = 8.05
         # Cache last valid distance to handle empty/invalid frames gracefully
         self.last_valid_distance = None
         # Debug toggle: log which ToF detection method succeeds
@@ -527,6 +530,9 @@ class DistanceCalculator:
         # distance = β₀ + β₁ × c × Δt / 1000
         # where c is in m/s and Δt is in μs
         distance_mm = self.BETA_0 + self.BETA_1 * c * delta_t / 1000
+
+        # Apply tilt correction to final distance
+        distance_mm = distance_mm * math.cos(math.radians(self.tilt_angle_deg))
 
         # Cache valid distance for future fallbacks
         self.last_valid_distance = distance_mm
