@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 from scipy import signal
 
 FS = 1000000.0  # 1 MHz
+BPF_APPLY = True
+BPF_LOW = 20e3
+BPF_HIGH = 60e3
 
 
 def load_adc_data(file_path):
@@ -336,17 +339,31 @@ def plot_folder(folder_path, output_dir, calculator):
 	if tx_signal is not None and len(tx_signal) > 0:
 		tx_start_sample = calculator.detect_tx_start(tx_signal)
 
+	rx_vol = None
+	tx_vol = None
+
+	if tx_signal is not None and len(tx_signal) > 0:
+		tx_vol = tx_signal - np.mean(tx_signal)
+		tx_start_sample = calculator.detect_tx_start(tx_signal)
+
 	if rx_signal is not None and len(rx_signal) > 0:
-		filtered = calculator.bandpass_filter(rx_signal)
+		rx_vol = rx_signal - np.mean(rx_signal)
+		if BPF_APPLY:
+			try:
+				rx_vol = calculator.bandpass_filter(rx_vol, BPF_LOW, BPF_HIGH)
+			except Exception:
+				pass
+
+		filtered = calculator.bandpass_filter(rx_signal - np.mean(rx_signal), BPF_LOW, BPF_HIGH)
 		envelope = calculator.envelope_detection(filtered)
 		tof_sample = calculator.detect_tof(envelope, tx_signal)
 		rx_start_sample = tof_sample
 
 	fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=False)
 
-	if tx_signal is not None:
-		x_tx = np.arange(len(tx_signal))
-		axes[0].plot(x_tx, tx_signal, color="#1f77b4", linewidth=1.0, label="TX")
+	if tx_vol is not None:
+		x_tx = np.arange(len(tx_vol))
+		axes[0].plot(x_tx, tx_vol, color="#1f77b4", linewidth=1.0, label="TX")
 		if tx_start_sample != "Not Detected":
 			axes[0].axvline(
 				tx_start_sample,
@@ -355,7 +372,7 @@ def plot_folder(folder_path, output_dir, calculator):
 				linewidth=1.2,
 				label="TX start",
 			)
-			ymax = np.max(tx_signal)
+			ymax = np.max(tx_vol)
 			axes[0].text(
 				tx_start_sample,
 				ymax,
@@ -374,9 +391,9 @@ def plot_folder(folder_path, output_dir, calculator):
 		axes[0].set_title("TX Signal (missing)")
 		axes[0].axis("off")
 
-	if rx_signal is not None:
-		x_rx = np.arange(len(rx_signal))
-		axes[1].plot(x_rx, rx_signal, color="#ff7f0e", linewidth=1.0, label="RX")
+	if rx_vol is not None:
+		x_rx = np.arange(len(rx_vol))
+		axes[1].plot(x_rx, rx_vol, color="#ff7f0e", linewidth=1.0, label="RX")
 
 		if rx_start_sample != "Not Detected":
 			axes[1].axvline(
@@ -386,7 +403,7 @@ def plot_folder(folder_path, output_dir, calculator):
 				linewidth=1.2,
 				label="RX start",
 			)
-			ymax = np.max(rx_signal)
+			ymax = np.max(rx_vol)
 			axes[1].text(
 				rx_start_sample,
 				ymax,
