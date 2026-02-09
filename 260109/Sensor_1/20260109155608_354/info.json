@@ -1,0 +1,31 @@
+{
+    "sensorId": 1,
+    "loggedAt": "2026-01-09T15:56:08.354358Z",
+    "gatewayId": 1,
+    "lat": 36.379967,
+    "lng": 127.407258,
+    "temp": "7.47",
+    "objectTemp": "6.57",
+    "humi": "45.96",
+    "pressure": "1015.49",
+    "dewPoint": "0.00",
+    "surface": 1,
+    "skid": 0,
+    "heuristicsSkid": -1,
+    "kmaWeather": -1,
+    "futureTemp": null,
+    "surfaceStatus": null,
+    "distance in mm": "821.38",
+    "gps": {
+        "lat": 36.379967,
+        "lng": 127.407258,
+        "alt": null,
+        "speed": 0.07,
+        "gqi": 0,
+        "hdop": 99.99
+    },
+    "surfaceType": {
+        "result": 1
+    },
+    "version": 3.2
+}
