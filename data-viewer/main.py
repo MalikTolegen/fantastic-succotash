@@ -9,7 +9,6 @@ import time
 from scipy import signal
 import traceback
 from collections import deque
-from datetime import datetime
 
 try:
     from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
@@ -713,54 +712,6 @@ class DistanceKalmanFilter:
         self.P = np.eye(2) * 1000
 
 
-def parse_timestamp(timestamp_str):
-    """
-    Parse timestamp string to datetime object.
-    
-    Supports multiple formats:
-    - YYYYMMDDHHMMSS_milliseconds (e.g., "20260105104916_350")
-    - Standard datetime formats
-    - ISO format strings
-    
-    Args:
-        timestamp_str: Timestamp string from info.json 'loggedAt' field
-        
-    Returns:
-        datetime object or None if parsing fails
-    """
-    if timestamp_str is None or timestamp_str == '':
-        return None
-    
-    try:
-        # Try format: YYYYMMDDHHMMSS_milliseconds
-        if '_' in timestamp_str:
-            parts = timestamp_str.split('_')
-            dt = datetime.strptime(parts[0], '%Y%m%d%H%M%S')
-            if len(parts) > 1:
-                milliseconds = int(parts[1])
-                dt = dt.replace(microsecond=milliseconds * 1000)
-            return dt
-    except (ValueError, AttributeError):
-        pass
-    
-    # Try standard datetime formats
-    formats = [
-        '%Y-%m-%d %H:%M:%S.%f',
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%dT%H:%M:%S.%f',
-        '%Y-%m-%dT%H:%M:%S',
-        '%Y/%m/%d %H:%M:%S',
-    ]
-    
-    for fmt in formats:
-        try:
-            return datetime.strptime(str(timestamp_str), fmt)
-        except (ValueError, AttributeError):
-            continue
-    
-    return None
-
-
 class ViewModel:
     def __init__(self): pass
 
@@ -928,15 +879,11 @@ class PlayerController(QObject):
         
         # Smoothing state management
         self.distance_history = {}  # {sensor_id: deque(maxlen=20)} storing raw distances
-        self.kalman_filters = {}  # {sensor_id: DistanceKalmanFilter()}
-        self.last_timestamps = {}  # {sensor_id: datetime} for time delta calculation
         self.last_frame_index = -1  # Track previous frame index to detect jumps vs sequential navigation
         
         # Initialize smoothing state for all sensors
         for sid in range(6):
             self.distance_history[sid] = deque(maxlen=20)
-            self.kalman_filters[sid] = DistanceKalmanFilter()
-            self.last_timestamps[sid] = None
 
         # High DPI settings check
         try:
@@ -989,7 +936,7 @@ class PlayerController(QObject):
         # Reset Button
         self.window.btn_reset.clicked.connect(self.reset_all)
 
-    def _calculate_distance(self, sensor_id, folder_path, temp_C, humi_percent, timestamp_str=None, is_sequential=False):
+    def _calculate_distance(self, sensor_id, folder_path, temp_C, humi_percent):
         """
         Calculate distance for a sensor frame with smoothing.
         
@@ -998,9 +945,6 @@ class PlayerController(QObject):
             folder_path: Path to frame folder
             temp_C: Temperature in Celsius
             humi_percent: Humidity percentage
-            timestamp_str: Timestamp string from info.json 'loggedAt' field (optional)
-            is_sequential: Whether this is sequential navigation (True) or jump (False)
-            
         Returns:
             Dictionary with keys: 'distance_mm' (smoothed), 'distance_raw', 'distance_filtered', 
             'distance_smooth', 'tof_us', 'tx_centroid_us', 'processing_time_ms', 'status'
@@ -1109,36 +1053,8 @@ class PlayerController(QObject):
                         distance_filtered = float(filtered_array[-1])  # Use last (current) value
                     result['distance_filtered'] = distance_filtered
                     
-                    # Stage 3: Kalman Filter (temporal smoothing)
-                    # Only apply if sequential navigation
-                    if is_sequential:
-                        # Parse timestamp and calculate time delta
-                        current_timestamp = parse_timestamp(timestamp_str)
-                        dt = 1.0  # Default 1 second if timestamp unavailable
-                        
-                        if current_timestamp is not None and self.last_timestamps[sensor_id] is not None:
-                            time_delta = (current_timestamp - self.last_timestamps[sensor_id]).total_seconds()
-                            if 0 < time_delta < 10:  # Sanity check: reasonable time gap
-                                dt = time_delta
-                        
-                        # Kalman prediction step
-                        if self.last_timestamps[sensor_id] is not None:
-                            self.kalman_filters[sensor_id].predict(dt)
-                        
-                        # Kalman update step
-                        distance_smooth = self.kalman_filters[sensor_id].update(distance_filtered)
-                        result['distance_smooth'] = float(distance_smooth)
-                        
-                        # Update timestamp
-                        if current_timestamp is not None:
-                            self.last_timestamps[sensor_id] = current_timestamp
-                    else:
-                        # Non-sequential: use filtered value without Kalman
-                        result['distance_smooth'] = distance_filtered
-                        # Still update timestamp for next frame (if it becomes sequential)
-                        current_timestamp = parse_timestamp(timestamp_str)
-                        if current_timestamp is not None:
-                            self.last_timestamps[sensor_id] = current_timestamp
+                    # Stage 3: No Kalman smoothing (use Hampel output only)
+                    result['distance_smooth'] = distance_filtered
                     
                     # Final distance for display (smoothed)
                     result['distance_mm'] = result['distance_smooth']
@@ -1171,12 +1087,8 @@ class PlayerController(QObject):
                         info = json.load(f)
                     widget = self.window.stacked_meta_info.widget(idx)
                     if widget:
-                        # Check if sequential (same frame, just switching sensor view)
-                        is_sequential = (self.last_frame_index == self.current_index)
-                        timestamp_str = info.get('loggedAt', None)
                         distance_result = self._calculate_distance(
-                            idx, folder_path, info.get('temp'), info.get('humi'),
-                            timestamp_str=timestamp_str, is_sequential=is_sequential
+                            idx, folder_path, info.get('temp'), info.get('humi')
                         )
                         if distance_result['status'] == 'OK':
                             widget.lbl_distance.setText(f"{distance_result['distance_mm']:.3f} mm")
@@ -1325,8 +1237,6 @@ class PlayerController(QObject):
         if not is_sequential and self.last_frame_index >= 0:
             for sid in range(6):
                 self.distance_history[sid].clear()
-                self.kalman_filters[sid].reset()
-                self.last_timestamps[sid] = None
 
         first_valid_info = True
         for sid in range(6):
@@ -1349,10 +1259,8 @@ class PlayerController(QObject):
                         if self.window.left_tabs.currentIndex() == 1:  # Metadata tab index
                             current_sensor_idx = self.window.stacked_meta_info.currentIndex()
                             if sid == current_sensor_idx:
-                                timestamp_str = info.get('loggedAt', None)
                                 distance_result = self._calculate_distance(
-                                    sid, folder_path, info.get('temp'), info.get('humi'),
-                                    timestamp_str=timestamp_str, is_sequential=is_sequential
+                                    sid, folder_path, info.get('temp'), info.get('humi')
                                 )
                                 if distance_result['status'] == 'OK':
                                     widget.lbl_distance.setText(f"{distance_result['distance_mm']:.3f} mm")
@@ -1401,8 +1309,6 @@ class PlayerController(QObject):
         # Reset distance tracking state
         for sid in range(6):
             self.distance_history[sid].clear()
-            self.kalman_filters[sid].reset()
-            self.last_timestamps[sid] = None
         self.last_frame_index = -1
         
         # Update UI - sensor buttons
@@ -1416,7 +1322,7 @@ class PlayerController(QObject):
         self.window.lbl_current_file.setText("No File Loaded")
         self.window.btn_play.setChecked(False)
         self.window.btn_play.setText("▶ Play")
-        
+
         # Clear all graphs
         for sensor_view in self.window.sensor_graphs:
             sensor_view.tx_plot['curve'].clear()
@@ -1424,19 +1330,19 @@ class PlayerController(QObject):
             sensor_view.fft_plot['curve'].clear()
             sensor_view.p_fft_plot['curve'].clear()
             sensor_view.stft_widget['img'].clear()
-        
+
         # Clear trend view
         if hasattr(self.window, 'trend_view'):
             for opt_data in self.window.trend_view.active_plots.values():
                 for curve in opt_data['curves']:
                     curve.clear()
-        
+
         # Reset metadata displays
         self.window.lbl_log_time.setText("-")
         self.window.lbl_gps_lat.setText("-")
         self.window.lbl_gps_lon.setText("-")
         self.window.lbl_gps_spd.setText("-")
-        
+
         for info_view in [self.window.stacked_meta_info.widget(i) for i in range(6)]:
             info_view.lbl_obj_temp.setText("-")
             info_view.lbl_amb_temp.setText("-")
@@ -1445,9 +1351,9 @@ class PlayerController(QObject):
             info_view.lbl_distance.setText("-")
             info_view.lbl_tof.setText("-")
             info_view.lbl_processing_time.setText("-")
-        
+
         print("[Reset] Application state reset complete.", flush=True)
-    
+
     def _process_and_draw_signal(self, sid, folder_path):
         """
         [수정됨] UI에서 설정한 STFT 파라미터(Window Size, Overlap, Zero Padding) 적용
@@ -1491,7 +1397,7 @@ class PlayerController(QObject):
                             rx_vol = butter_bandpass_filter(rx_vol, low, high, FS)
                         except:
                             pass
-                    
+
                     # [EXPERIMENTAL] Calculate ToF for marker visualization (use TX if available for noise baseline)
                     try:
                         tx_signal_for_marker = None
