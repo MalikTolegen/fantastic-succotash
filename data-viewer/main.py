@@ -176,10 +176,66 @@ class DistanceCalculator:
         Returns:
             ToF sample index, or "Not Detected" if not found
         """
+        tx_start_std = None
+        tx_end_std = None
+        use_basic_first = False
 
-        
+        if tx_signal is not None and len(tx_signal) >= 1000:
+            tx_start_std = np.std(tx_signal[:1000])
+            tx_end_std = np.std(tx_signal[-1000:])
+            if tx_start_std < 10 * tx_end_std:
+                use_basic_first = True
+
+        if use_basic_first:
+            self.crosstalk_skip = 3000
+        else:
+            self.crosstalk_skip = 2500
+
         if len(envelope) <= self.crosstalk_skip + self.min_detection_distance:
             return "Not Detected"
+
+        # Search region: after crosstalk zone
+        search_signal = envelope[self.crosstalk_skip:]
+
+        def basic_criteria_detection(signal_data):
+            rise_len = 100
+            rise_delta_min = 10
+            rise_end_min = 50
+            slope_threshold = np.tan(np.deg2rad(22.5))
+
+            if len(signal_data) > rise_len + 1:
+                for start_idx in range(0, len(signal_data) - rise_len - 1):
+                    end_idx = start_idx + rise_len
+                    rising = True
+                    for j in range(start_idx, end_idx):
+                        if signal_data[j + 1] <= signal_data[j]:
+                            rising = False
+                            break
+                    if not rising:
+                        continue
+
+                    if (signal_data[end_idx] - signal_data[start_idx]) < rise_delta_min:
+                        continue
+                    if signal_data[end_idx] < rise_end_min:
+                        continue
+
+                    onset_idx = None
+                    for j in range(start_idx, end_idx):
+                        if (signal_data[j + 1] - signal_data[j]) > slope_threshold:
+                            onset_idx = j
+                            break
+
+                    if onset_idx is not None:
+                        return onset_idx + self.crosstalk_skip
+
+            return None
+
+        if use_basic_first:
+            tof_idx_basic = basic_criteria_detection(search_signal)
+            if tof_idx_basic is not None:
+                if self.debug_tof:
+                    print("[ToF] Method=BasicCriteria", flush=True)
+                return int(tof_idx_basic)
 
         # Prefer TX-derived noise (post-burst) for stability; fallback to RX 1500-2000 region
         if tx_signal is not None and len(tx_signal) >= 2000:
@@ -191,8 +247,6 @@ class DistanceCalculator:
                 return "Not Detected"
             tx_env = None
             noise_region = envelope[1500:2000]
-        
-        # noise_region = envelope[2500:3500] # THIS IS ONLY FOR SEJINNIM'S SENSOR DATA
 
         noise_std = np.std(noise_region)
         noise_median = np.median(noise_region)
@@ -208,9 +262,6 @@ class DistanceCalculator:
         # Safety floor to avoid triggering on too-quiet TX
         MIN_THRESHOLD = 30
         adaptive_threshold = max(adaptive_threshold, MIN_THRESHOLD)
-        
-        # Search region: after crosstalk zone
-        search_signal = envelope[self.crosstalk_skip:]
         
         # Find where signal crosses threshold
         threshold_crossings = np.where(search_signal > adaptive_threshold)[0]
@@ -258,90 +309,70 @@ class DistanceCalculator:
                 if envelope[tof_idx] > self.min_absolute_amplitude:
                     if self.debug_tof:
                         print("[ToF] Method=AdaptiveThreshold", flush=True)
+                        if tx_signal is not None and len(tx_signal) >= 1000:
+                            tx_start_std = np.std(tx_signal[:1000])
+                            tx_end_std = np.std(tx_signal[-1000:])
+                            print(
+                                f"[ToF] TX STD start={tx_start_std:.4f}, end={tx_end_std:.4f}",
+                                flush=True,
+                            )
                     return int(tof_idx)
 
-        # Method 1.5: Adaptive Threshold using RX noise region (2500-3000)
-        if len(envelope) < 3000:
-            return "Not Detected"
+        if not use_basic_first:
+            # Method 1.5: Adaptive Threshold using RX noise region (2500-3000)
+            if len(envelope) < 3000:
+                return "Not Detected"
 
-        noise_region_rx = envelope[2500:3000]
-        noise_std_rx = np.std(noise_region_rx)
-        noise_median_rx = np.median(noise_region_rx)
-        noise_max_rx = np.max(noise_region_rx)
+            noise_region_rx = envelope[2500:3000]
+            noise_std_rx = np.std(noise_region_rx)
+            noise_median_rx = np.median(noise_region_rx)
+            noise_max_rx = np.max(noise_region_rx)
 
-        threshold_median_rx = noise_median_rx + 5 * noise_std_rx
-        threshold_percentile_rx = np.percentile(noise_region_rx, 90) + 4 * noise_std_rx
-        threshold_max_rx = noise_max_rx + 3 * noise_std_rx
+            threshold_median_rx = noise_median_rx + 5 * noise_std_rx
+            threshold_percentile_rx = np.percentile(noise_region_rx, 90) + 4 * noise_std_rx
+            threshold_max_rx = noise_max_rx + 3 * noise_std_rx
 
-        adaptive_threshold_rx = np.median(
-            [threshold_median_rx, threshold_percentile_rx, threshold_max_rx]
-        )
-        adaptive_threshold_rx = max(adaptive_threshold_rx, MIN_THRESHOLD)
+            adaptive_threshold_rx = np.median(
+                [threshold_median_rx, threshold_percentile_rx, threshold_max_rx]
+            )
+            adaptive_threshold_rx = max(adaptive_threshold_rx, MIN_THRESHOLD)
 
-        threshold_crossings_rx = np.where(search_signal > adaptive_threshold_rx)[0]
+            threshold_crossings_rx = np.where(search_signal > adaptive_threshold_rx)[0]
 
-        if len(threshold_crossings_rx) > 0:
-            first_crossing_rx = threshold_crossings_rx[0]
+            if len(threshold_crossings_rx) > 0:
+                first_crossing_rx = threshold_crossings_rx[0]
 
-            if first_crossing_rx < self.min_detection_distance:
-                valid_crossings_rx = threshold_crossings_rx[
-                    threshold_crossings_rx >= self.min_detection_distance
-                ]
-                if len(valid_crossings_rx) == 0:
-                    first_crossing_rx = None
-                else:
-                    first_crossing_rx = valid_crossings_rx[0]
+                if first_crossing_rx < self.min_detection_distance:
+                    valid_crossings_rx = threshold_crossings_rx[
+                        threshold_crossings_rx >= self.min_detection_distance
+                    ]
+                    if len(valid_crossings_rx) == 0:
+                        first_crossing_rx = None
+                    else:
+                        first_crossing_rx = valid_crossings_rx[0]
 
-            if first_crossing_rx is not None:
-                sustained = True
-                for i in range(
-                    first_crossing_rx,
-                    min(first_crossing_rx + 5, len(search_signal))
-                ):
-                    if search_signal[i] <= adaptive_threshold_rx * 0.8:
-                        sustained = False
-                        break
+                if first_crossing_rx is not None:
+                    sustained = True
+                    for i in range(
+                        first_crossing_rx,
+                        min(first_crossing_rx + 5, len(search_signal))
+                    ):
+                        if search_signal[i] <= adaptive_threshold_rx * 0.8:
+                            sustained = False
+                            break
 
-                if sustained:
-                    tof_idx_rx = first_crossing_rx + self.crosstalk_skip
-                    if envelope[tof_idx_rx] > self.min_absolute_amplitude:
-                        if self.debug_tof:
-                            print("[ToF] Method=AdaptiveThreshold2.0", flush=True)
-                        return int(tof_idx_rx)
+                    if sustained:
+                        tof_idx_rx = first_crossing_rx + self.crosstalk_skip
+                        if envelope[tof_idx_rx] > self.min_absolute_amplitude:
+                            if self.debug_tof:
+                                print("[ToF] Method=AdaptiveThreshold2.0", flush=True)
+                            return int(tof_idx_rx)
 
-        # Method BasicCriteria: sustained rise + amplitude + slope gate
-        rise_len = 100
-        rise_delta_min = 10
-        rise_end_min = 50
-        slope_threshold = np.tan(np.deg2rad(22.5))
-
-        if len(search_signal) > rise_len + 1:
-            for start_idx in range(0, len(search_signal) - rise_len - 1):
-                end_idx = start_idx + rise_len
-                rising = True
-                for j in range(start_idx, end_idx):
-                    if search_signal[j + 1] <= search_signal[j]:
-                        rising = False
-                        break
-                if not rising:
-                    continue
-
-                if (search_signal[end_idx] - search_signal[start_idx]) < rise_delta_min:
-                    continue
-                if search_signal[end_idx] < rise_end_min:
-                    continue
-
-                onset_idx = None
-                for j in range(start_idx, end_idx):
-                    if (search_signal[j + 1] - search_signal[j]) > slope_threshold:
-                        onset_idx = j
-                        break
-
-                if onset_idx is not None:
-                    tof_idx_basic = onset_idx + self.crosstalk_skip
-                    if self.debug_tof:
-                        print("[ToF] Method=BasicCriteria", flush=True)
-                    return int(tof_idx_basic)
+            tof_idx_basic = basic_criteria_detection(search_signal)
+            if tof_idx_basic is not None:
+                if self.debug_tof:
+                    print("[ToF] Method=BasicCriteria", flush=True)
+                return int(tof_idx_basic)
         
         # Method 2: Energy-Based Detection (Fallback)
         window_size = 100  # 100 μs window
