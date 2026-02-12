@@ -305,58 +305,6 @@ class DistanceCalculator:
                 tof_idx = start_idx + self.crosstalk_skip
                 if envelope[tof_idx] > self.min_absolute_amplitude:
                     return int(tof_idx)
-
-        if not use_basic_first:
-            # Method 1.5: Adaptive Threshold using RX noise region (2500-3000)
-            if len(envelope) < 3000:
-                return "Not Detected"
-
-            noise_region_rx = envelope[2500:3000]
-            noise_std_rx = np.std(noise_region_rx)
-            noise_median_rx = np.median(noise_region_rx)
-            noise_max_rx = np.max(noise_region_rx)
-
-            threshold_median_rx = noise_median_rx + 5 * noise_std_rx
-            threshold_percentile_rx = np.percentile(noise_region_rx, 90) + 4 * noise_std_rx
-            threshold_max_rx = noise_max_rx + 3 * noise_std_rx
-
-            adaptive_threshold_rx = np.median(
-                [threshold_median_rx, threshold_percentile_rx, threshold_max_rx]
-            )
-            adaptive_threshold_rx = max(adaptive_threshold_rx, MIN_THRESHOLD)
-
-            threshold_crossings_rx = np.where(search_signal > adaptive_threshold_rx)[0]
-
-            if len(threshold_crossings_rx) > 0:
-                first_crossing_rx = threshold_crossings_rx[0]
-
-                if first_crossing_rx < self.min_detection_distance:
-                    valid_crossings_rx = threshold_crossings_rx[
-                        threshold_crossings_rx >= self.min_detection_distance
-                    ]
-                    if len(valid_crossings_rx) == 0:
-                        first_crossing_rx = None
-                    else:
-                        first_crossing_rx = valid_crossings_rx[0]
-
-                if first_crossing_rx is not None:
-                    sustained = True
-                    for i in range(
-                        first_crossing_rx,
-                        min(first_crossing_rx + 5, len(search_signal))
-                    ):
-                        if search_signal[i] <= adaptive_threshold_rx * 0.8:
-                            sustained = False
-                            break
-
-                    if sustained:
-                        tof_idx_rx = first_crossing_rx + self.crosstalk_skip
-                        if envelope[tof_idx_rx] > self.min_absolute_amplitude:
-                            return int(tof_idx_rx)
-
-            tof_idx_basic = basic_criteria_detection(search_signal)
-            if tof_idx_basic is not None:
-                return int(tof_idx_basic)
         
         # Method 2: Energy-Based Detection (Fallback)
         window_size = 100  # 100 μs window
@@ -424,18 +372,6 @@ class DistanceCalculator:
                         print("[ToF] Method=EnergyFallback", flush=True)
                     return int(max_energy_idx)
         
-        # Method 3: First Significant Rise Detection (Last Resort)
-        derivative = np.diff(search_signal)
-        significant_rise = derivative > (noise_std * 2.5)
-        
-        if np.any(significant_rise):
-            rise_indices = np.where(significant_rise)[0]
-            valid_rises = rise_indices[rise_indices >= self.min_detection_distance]
-            
-            if len(valid_rises) > 0:
-                tof_idx = valid_rises[0] + self.crosstalk_skip
-                if envelope[tof_idx] > adaptive_threshold * 0.7 and envelope[tof_idx] > self.min_absolute_amplitude:
-                    return int(tof_idx)
         
         return "Not Detected"
     
