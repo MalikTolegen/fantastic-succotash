@@ -31,7 +31,7 @@ class DistanceCalculator:
     """Calculate distance using ToF detection, TX start time, and LSE model."""
     
     # LSE Model parameters
-    BETA_0 = -14.057  # mm 
+    BETA_0 = -14.057  # needs to be calibrated based on setup
     BETA_1 = 0.5
     
     def __init__(self, sampling_rate=1e6):
@@ -58,7 +58,7 @@ class DistanceCalculator:
         self.snr_threshold = 12  # Signal-to-noise ratio threshold (dB)
         self.min_absolute_amplitude = 50  # Minimum absolute signal amplitude
         # Tilt correction (degrees) for final distance adjustment
-        self.tilt_angle_deg = 8.05
+        self.tilt_angle_deg = 8.05 # needs to be manually changed if the sensor is tilted differently
         
         # Cache for last valid distance (to handle empty file edge-case)
         self.last_valid_distance = None  # Store last successful distance prediction
@@ -149,37 +149,85 @@ class DistanceCalculator:
     
     def detect_tof(self, envelope, tx_signal=None):
         """
-        Detect Time-of-Flight from envelope signal using TX-derived noise baseline.
+        Detect Time-of-Flight from envelope signal using adaptive threshold method.
+        Optionally leverages TX post-burst noise for a stable baseline.
         
         Args:
-            envelope: RX envelope signal
-            tx_signal: Raw TX signal (optional, for stable noise estimation)
+            envelope: Envelope signal
             
         Returns:
             ToF sample index, or "Not Detected" if not found
         """
+        tx_start_std = None
+        tx_end_std = None
+        use_basic_first = False
+
+        if tx_signal is not None and len(tx_signal) >= 1000:
+            tx_start_std = np.std(tx_signal[:1000])
+            tx_end_std = np.std(tx_signal[-1000:])
+            if tx_start_std < 10 * tx_end_std:
+                use_basic_first = True
+
+        if use_basic_first:
+            self.crosstalk_skip = 3000
+        else:
+            self.crosstalk_skip = 2500
+
         if len(envelope) <= self.crosstalk_skip + self.min_detection_distance:
             return "Not Detected"
-        
-        # Use TX post-burst noise for stable, distance-independent baseline
+
+        # Search region: after crosstalk zone
+        search_signal = envelope[self.crosstalk_skip:]
+
+        def basic_criteria_detection(signal_data):
+            rise_len = 100
+            rise_delta_min = 10
+            rise_end_min = 50
+            slope_threshold = np.tan(np.deg2rad(22.5))
+
+            if len(signal_data) > rise_len + 1:
+                for start_idx in range(0, len(signal_data) - rise_len - 1):
+                    end_idx = start_idx + rise_len
+                    rising = True
+                    for j in range(start_idx, end_idx):
+                        if signal_data[j + 1] <= signal_data[j]:
+                            rising = False
+                            break
+                    if not rising:
+                        continue
+
+                    if (signal_data[end_idx] - signal_data[start_idx]) < rise_delta_min:
+                        continue
+                    if signal_data[end_idx] < rise_end_min:
+                        continue
+
+                    onset_idx = None
+                    for j in range(start_idx, end_idx):
+                        if (signal_data[j + 1] - signal_data[j]) > slope_threshold:
+                            onset_idx = j
+                            break
+
+                    if onset_idx is not None:
+                        return onset_idx + self.crosstalk_skip
+
+            return None
+
+        if use_basic_first:
+            tof_idx_basic = basic_criteria_detection(search_signal)
+            if tof_idx_basic is not None:
+                return int(tof_idx_basic)
+
+        # Prefer TX-derived noise (post-burst) for stability; fallback to RX 1500-2000 region
         if tx_signal is not None and len(tx_signal) >= 2000:
-            # Extract TX envelope for noise estimation
             tx_centered = tx_signal - np.median(tx_signal)
-            tx_analytic = signal.hilbert(tx_centered)
-            tx_env = np.abs(tx_analytic)
-            
-            # STABLE NOISE ZONE: Samples 1500-2000 of TX (after burst, before echoes)
+            tx_env = np.abs(signal.hilbert(tx_centered))
             noise_region = tx_env[1500:2000]
         else:
-            # Fallback: use RX-based noise from early region (before most echoes)
-            # Use 1500-2000 μs zone (safer than 2500-3500 for close targets)
-            noise_start = 1500
-            noise_end = 2000
-            if len(envelope) < noise_end:
+            if len(envelope) < 2000:
                 return "Not Detected"
-            noise_region = envelope[noise_start:noise_end]
-        
-        noise_mean = np.mean(noise_region)
+            tx_env = None
+            noise_region = envelope[1500:2000]
+
         noise_std = np.std(noise_region)
         noise_median = np.median(noise_region)
         noise_max = np.max(noise_region)
@@ -191,13 +239,9 @@ class DistanceCalculator:
         
         # Use the median of thresholds
         adaptive_threshold = np.median([threshold_median, threshold_percentile, threshold_max])
-        
-        # SAFETY FLOOR: Never allow threshold below minimum (prevents false positives from too-quiet TX)
-        MIN_THRESHOLD = 30  # ADC units
+        # Safety floor to avoid triggering on too-quiet TX
+        MIN_THRESHOLD = 30
         adaptive_threshold = max(adaptive_threshold, MIN_THRESHOLD)
-        
-        # Search region: after crosstalk zone
-        search_signal = envelope[self.crosstalk_skip:]
         
         # Find where signal crosses threshold
         threshold_crossings = np.where(search_signal > adaptive_threshold)[0]
@@ -225,8 +269,7 @@ class DistanceCalculator:
                     first_crossing = None
             
             if first_crossing is not None:
-                # Reduced backtracking: 100 samples max (was 400)
-                # More conservative to avoid overshooting
+                # Walk backward conservatively (reduced backtrack) to find rise start
                 start_idx = first_crossing
                 lookback_limit = max(self.min_detection_distance, first_crossing - 100)
                 
@@ -249,6 +292,15 @@ class DistanceCalculator:
         # Method 2: Energy-Based Detection (Fallback)
         window_size = 100  # 100 μs window
         hop_size = 20  # 20 μs hop
+        energy_snr_threshold = 6
+        energy_onset_k = 1.8
+        energy_sustain_len = 5
+        energy_lookback_factor = 4
+
+        # Use TX-only noise region for this fallback
+        energy_noise_region = None
+        if tx_env is not None and len(tx_env) >= 3000:
+            energy_noise_region = tx_env[2500:3000]
         
         max_energy = 0
         max_energy_idx = None
@@ -261,26 +313,48 @@ class DistanceCalculator:
                 max_energy = energy
                 max_energy_idx = i
         
-        noise_energy = np.sum(noise_region ** 2) / len(noise_region) * window_size
+        if energy_noise_region is None or len(energy_noise_region) == 0:
+            return "Not Detected"
+
+        noise_energy = np.sum(energy_noise_region ** 2) / len(energy_noise_region) * window_size
         energy_ratio_db = 10 * np.log10(max_energy / (noise_energy + 1e-10))
         
-        if energy_ratio_db > self.snr_threshold and max_energy_idx is not None:
+        if energy_ratio_db > energy_snr_threshold and max_energy_idx is not None:
             if max_energy_idx - self.crosstalk_skip >= self.min_detection_distance:
                 if envelope[max_energy_idx] > self.min_absolute_amplitude:
+                    # Refine to onset: find first sustained rise above a local threshold
+                    energy_search_start = max(
+                        self.crosstalk_skip,
+                        max_energy_idx - (window_size * energy_lookback_factor)
+                    )
+                    energy_segment = envelope[energy_search_start:max_energy_idx + 1]
+                    if len(energy_segment) > 0:
+                        seg_median = np.median(energy_segment)
+                        seg_std = np.std(energy_segment)
+                        local_threshold = seg_median + energy_onset_k * seg_std
+
+                        onset_idx = None
+                        for i in range(len(energy_segment)):
+                            if energy_segment[i] <= local_threshold:
+                                continue
+                            sustained = True
+                            end_i = min(i + energy_sustain_len, len(energy_segment))
+                            for j in range(i, end_i):
+                                if energy_segment[j] <= local_threshold * 0.8:
+                                    sustained = False
+                                    break
+                            if sustained:
+                                onset_idx = energy_search_start + i
+                                break
+
+                        if onset_idx is not None and envelope[onset_idx] > self.min_absolute_amplitude:
+                            if self.debug_tof:
+                                print("[ToF] Method=EnergyFallback", flush=True)
+                            return int(onset_idx)
+                    if self.debug_tof:
+                        print("[ToF] Method=EnergyFallback", flush=True)
                     return int(max_energy_idx)
         
-        # Method 3: First Significant Rise Detection (Last Resort)
-        derivative = np.diff(search_signal)
-        significant_rise = derivative > (noise_std * 2.5)
-        
-        if np.any(significant_rise):
-            rise_indices = np.where(significant_rise)[0]
-            valid_rises = rise_indices[rise_indices >= self.min_detection_distance]
-            
-            if len(valid_rises) > 0:
-                tof_idx = valid_rises[0] + self.crosstalk_skip
-                if envelope[tof_idx] > adaptive_threshold * 0.7 and envelope[tof_idx] > self.min_absolute_amplitude:
-                    return int(tof_idx)
         
         return "Not Detected"
     
@@ -294,6 +368,17 @@ class DistanceCalculator:
         Returns:
             TX start time in samples, or "Not Detected" if no burst detected
         """
+        # Check TX signal quality early
+        tx_start_std = None
+        tx_end_std = None
+        
+        if tx_signal is not None and len(tx_signal) >= 1000:
+            tx_start_std = np.std(tx_signal[:1000])
+            tx_end_std = np.std(tx_signal[-1000:])
+            if tx_start_std < 10 * tx_end_std:
+                start_idx = 0
+                return float(start_idx)
+        
         # Remove DC offset
         dc_offset = np.median(tx_signal)
         tx_centered = tx_signal - dc_offset
