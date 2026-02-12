@@ -50,7 +50,7 @@ class DistanceCalculator:
     """Calculate distance using ToF detection, TX centroid, and LSE model."""
     
     # LSE Model parameters
-    BETA_0 = -14.057  # mm
+    BETA_0 = -14.057  # should be calibrated before experiment
     BETA_1 = 0.5
     
     def __init__(self, sampling_rate=1e6):
@@ -232,8 +232,6 @@ class DistanceCalculator:
         if use_basic_first:
             tof_idx_basic = basic_criteria_detection(search_signal)
             if tof_idx_basic is not None:
-                if self.debug_tof:
-                    print("[ToF] Method=BasicCriteria", flush=True)
                 return int(tof_idx_basic)
 
         # Prefer TX-derived noise (post-burst) for stability; fallback to RX 1500-2000 region
@@ -306,15 +304,6 @@ class DistanceCalculator:
                 # Final validation: check absolute amplitude
                 tof_idx = start_idx + self.crosstalk_skip
                 if envelope[tof_idx] > self.min_absolute_amplitude:
-                    if self.debug_tof:
-                        print("[ToF] Method=AdaptiveThreshold", flush=True)
-                        if tx_signal is not None and len(tx_signal) >= 1000:
-                            tx_start_std = np.std(tx_signal[:1000])
-                            tx_end_std = np.std(tx_signal[-1000:])
-                            print(
-                                f"[ToF] TX STD start={tx_start_std:.4f}, end={tx_end_std:.4f}",
-                                flush=True,
-                            )
                     return int(tof_idx)
 
         if not use_basic_first:
@@ -363,14 +352,10 @@ class DistanceCalculator:
                     if sustained:
                         tof_idx_rx = first_crossing_rx + self.crosstalk_skip
                         if envelope[tof_idx_rx] > self.min_absolute_amplitude:
-                            if self.debug_tof:
-                                print("[ToF] Method=AdaptiveThreshold2.0", flush=True)
                             return int(tof_idx_rx)
 
             tof_idx_basic = basic_criteria_detection(search_signal)
             if tof_idx_basic is not None:
-                if self.debug_tof:
-                    print("[ToF] Method=BasicCriteria", flush=True)
                 return int(tof_idx_basic)
         
         # Method 2: Energy-Based Detection (Fallback)
@@ -450,8 +435,6 @@ class DistanceCalculator:
             if len(valid_rises) > 0:
                 tof_idx = valid_rises[0] + self.crosstalk_skip
                 if envelope[tof_idx] > adaptive_threshold * 0.7 and envelope[tof_idx] > self.min_absolute_amplitude:
-                    if self.debug_tof:
-                        print("[ToF] Method=RiseFallback", flush=True)
                     return int(tof_idx)
         
         return "Not Detected"
