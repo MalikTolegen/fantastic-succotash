@@ -48,7 +48,7 @@ from ViewModel import ViewModel
 from Protocol import Protocol, e_cmds
 from CommWorker import CommWorker
 from GpsWorker import GpsWorker
-from DistanceCalculator import DistanceCalculator, DistanceKalmanFilter, hampel_filter
+from DistanceCalculator import DistanceCalculator, hampel_filter
 
 # 샘플링 주파수
 FS = 1000000.0
@@ -120,7 +120,6 @@ class ApplicationController(QObject):
         
         # Distance calculation components
         self.distance_calculators = {}  # key: sensor_id -> DistanceCalculator
-        self.kalman_filters = {}  # key: sensor_id -> DistanceKalmanFilter
         self.last_distance = {}  # key: sensor_id -> distance in mm
         self.last_processing_time = {}  # key: sensor_id -> processing time in ms
         self.distance_history = {}  # key: sensor_id -> list of recent distances for smoothing
@@ -561,7 +560,6 @@ class ApplicationController(QObject):
         """Get or create DistanceCalculator for a sensor, updating filter params from UI."""
         if sensor_id not in self.distance_calculators:
             self.distance_calculators[sensor_id] = DistanceCalculator(sampling_rate=FS)
-            self.kalman_filters[sensor_id] = DistanceKalmanFilter()
             self.distance_history[sensor_id] = []
             self.miss_streak[sensor_id] = 0
         
@@ -587,7 +585,6 @@ class ApplicationController(QObject):
         try:
             # Get or create distance calculator
             calc = self._get_or_create_distance_calculator(sensor_id)
-            kalman = self.kalman_filters[sensor_id]
             
             # Get BME data for temperature and humidity
             temp_C = bme_data.get('temp') if bme_data else None
@@ -648,10 +645,7 @@ class ApplicationController(QObject):
                 else:
                     distance_hampel = float(distance_raw)
                 
-                # Kalman filter
-                dt = 0.2
-                kalman.predict(dt)
-                distance_mm = kalman.update(distance_hampel)
+                distance_mm = distance_hampel
             else:
                 # Missed detection; increment streak and optionally clear cache/filters
                 self.miss_streak[sensor_id] = self.miss_streak.get(sensor_id, 0) + 1
@@ -659,7 +653,6 @@ class ApplicationController(QObject):
                     # Clear cached distance in calculator to avoid sticky stale values
                     calc.last_valid_distance = None
                     self.distance_history[sensor_id] = []
-                    kalman.reset()
                 distance_mm = distance_raw  # Could be "Not Detected" or cached value
             
             processing_time_ms = (time.perf_counter() - start_time) * 1000.0
