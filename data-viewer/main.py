@@ -50,7 +50,7 @@ class DistanceCalculator:
     """Calculate distance using ToF detection, TX centroid, and LSE model."""
     
     # LSE Model parameters
-    BETA_0 = -14.057  # should be calibrated before experiment
+    BETA_0 = 0  # should be calibrated before experiment
     BETA_1 = 0.5
     
     def __init__(self, sampling_rate=1e6):
@@ -77,7 +77,7 @@ class DistanceCalculator:
         self.snr_threshold = 12  # Signal-to-noise ratio threshold (dB)
         self.min_absolute_amplitude = 50  # Minimum absolute signal amplitude
         # Tilt correction (degrees) for final distance adjustment
-        self.tilt_angle_deg = 8.05
+        self.tilt_angle_deg = 0 # should be set according to sensor mounting angle
         # Cache last valid distance to handle empty/invalid frames gracefully
         self.last_valid_distance = None
         # Debug toggle: log which ToF detection method succeeds
